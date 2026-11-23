@@ -64,6 +64,7 @@ final class HTTPConnection {
     private let queue: DispatchQueue
     private var buffer = Data()
     private var responded = false
+    private var closed = false
 
     var onRequest: ((HTTPRequest, HTTPConnection) -> Void)?
     var onClose: ((HTTPConnection) -> Void)?
@@ -103,19 +104,35 @@ final class HTTPConnection {
 
             var headers = response.headers
             headers["Content-Length"] = String(response.body.count)
-            headers["Connection"] = "close"
-            if headers["Cache-Control"] == nil { headers["Cache-Control"] = "no-store" }
 
-            var head = "HTTP/1.1 \(response.status) \(HTTPResponse.reasonPhrase(response.status))\r\n"
-            for (name, value) in headers {
-                head += "\(name): \(value)\r\n"
-            }
-            head += "\r\n"
-
-            var data = Data(head.utf8)
+            var data = Self.head(status: response.status, headers: headers)
             data.append(response.body)
             self.nw.send(content: data, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { [weak self] _ in
                 self?.close()
+            })
+        }
+    }
+
+    /// 長く続く応答(MJPEG など)を始める。以後 sendChunk で本文を送り続ける。
+    /// 相手が切断したら接続を閉じる。
+    func beginStream(headers: [String: String]) {
+        queue.async {
+            guard !self.responded else { return }
+            self.responded = true
+            self.nw.send(content: Self.head(status: 200, headers: headers), completion: .contentProcessed { _ in })
+            self.watchForClientClose()
+        }
+    }
+
+    /// ストリームの本文を送る。送り終わったら(または失敗したら)completion を呼ぶ。
+    func sendChunk(_ data: Data, completion: @escaping (Bool) -> Void) {
+        queue.async {
+            guard !self.closed else {
+                completion(false)
+                return
+            }
+            self.nw.send(content: data, completion: .contentProcessed { error in
+                completion(error == nil)
             })
         }
     }
@@ -124,7 +141,31 @@ final class HTTPConnection {
         nw.cancel()
     }
 
+    private static func head(status: Int, headers: [String: String]) -> Data {
+        var headers = headers
+        headers["Connection"] = "close"
+        if headers["Cache-Control"] == nil { headers["Cache-Control"] = "no-store" }
+        var text = "HTTP/1.1 \(status) \(HTTPResponse.reasonPhrase(status))\r\n"
+        for (name, value) in headers {
+            text += "\(name): \(value)\r\n"
+        }
+        text += "\r\n"
+        return Data(text.utf8)
+    }
+
+    private func watchForClientClose() {
+        nw.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, isComplete, error in
+            guard let self = self else { return }
+            if isComplete || error != nil {
+                self.close()
+            } else {
+                self.watchForClientClose()
+            }
+        }
+    }
+
     private func finish() {
+        closed = true
         let callback = onClose
         onClose = nil
         onRequest = nil

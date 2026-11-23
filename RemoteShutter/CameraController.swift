@@ -6,6 +6,32 @@ struct CapturedPhoto {
     let height: Int
 }
 
+/// 写真とライブ映像の向き。iPhone をどう構えているか(三脚に横向きで付けるなど)に合わせる
+enum CaptureOrientation: String, CaseIterable {
+    case portrait
+    case landscapeRight
+    case landscapeLeft
+    case portraitUpsideDown
+
+    var av: AVCaptureVideoOrientation {
+        switch self {
+        case .portrait: return .portrait
+        case .landscapeRight: return .landscapeRight
+        case .landscapeLeft: return .landscapeLeft
+        case .portraitUpsideDown: return .portraitUpsideDown
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .portrait: return "縦向き"
+        case .landscapeRight: return "横向き(画面の下端が右)"
+        case .landscapeLeft: return "横向き(画面の下端が左)"
+        case .portraitUpsideDown: return "逆さま"
+        }
+    }
+}
+
 enum CameraError: LocalizedError {
     case notAuthorized
     case notRunning
@@ -29,21 +55,46 @@ enum CameraError: LocalizedError {
 final class CameraController: NSObject {
     let session = AVCaptureSession()
     private let photoOutput = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "camera.session")
+    private let videoQueue = DispatchQueue(label: "camera.video")
     private var inFlight: [Int64: PhotoCaptureProcessor] = [:]
     private var configured = false
 
     private let lock = NSLock()
     private var _maxDimensions = CMVideoDimensions(width: 0, height: 0)
+    private var _orientation: CaptureOrientation = .portrait
 
     /// どのスレッドから呼ばれてもよいログ出力
     var log: (String) -> Void = { _ in }
     /// セッションが動き始めた/止まったときに呼ばれる(任意のスレッド)
     var onRunningChange: ((Bool) -> Void)?
+    /// ライブ映像の1フレームごとに videoQueue 上で呼ばれる。起動前に1回だけ設定する
+    var onVideoFrame: ((CMSampleBuffer) -> Void)?
 
     var maxDimensions: CMVideoDimensions {
         lock.lock(); defer { lock.unlock() }
         return _maxDimensions
+    }
+
+    var orientation: CaptureOrientation {
+        lock.lock(); defer { lock.unlock() }
+        return _orientation
+    }
+
+    func setOrientation(_ value: CaptureOrientation) {
+        lock.lock(); _orientation = value; lock.unlock()
+        sessionQueue.async { self.applyOrientation() }
+    }
+
+    /// 写真とライブ映像の両方の接続に向きを反映する(sessionQueue 上で呼ぶ)
+    private func applyOrientation() {
+        let value = orientation.av
+        for output in [photoOutput, videoOutput] as [AVCaptureOutput] {
+            if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
+                connection.videoOrientation = value
+            }
+        }
     }
 
     var isRunning: Bool { session.isRunning }
@@ -117,7 +168,17 @@ final class CameraController: NSObject {
             throw CameraError.configurationFailed("写真出力を追加できません")
         }
         session.addOutput(photoOutput)
+
+        // ライブ映像用。遅れたフレームは捨てて、常に最新だけを配信する
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
+        if session.canAddOutput(videoOutput) {
+            session.addOutput(videoOutput)
+        } else {
+            log("ライブ映像の出力を追加できません(撮影だけは使えます)")
+        }
         session.commitConfiguration()
+        applyOrientation()
 
         // commit 後に activeFormat が確定するので、ここで最大解像度を選ぶ
         let candidates = device.activeFormat.supportedMaxPhotoDimensions
@@ -142,6 +203,7 @@ final class CameraController: NSObject {
                 return
             }
 
+            self.applyOrientation()
             let settings: AVCapturePhotoSettings
             if self.photoOutput.availablePhotoCodecTypes.contains(.jpeg) {
                 settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
@@ -189,6 +251,12 @@ final class CameraController: NSObject {
 
     @objc private func interruptionEnded(_ n: Notification) {
         log("カメラの中断が終わりました")
+    }
+}
+
+extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        onVideoFrame?(sampleBuffer)
     }
 }
 

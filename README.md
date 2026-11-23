@@ -12,8 +12,8 @@ Windows PCのブラウザから、iPhoneのカメラのライブ映像を見な�
 | マイルストーン | 内容 | 状態 |
 |---|---|---|
 | M1 | 空のアプリをActionsでビルドし、実機で起動する | 完了(build 1 で実機起動を確認) |
-| M2 | HTTPサーバーと `POST /capture` | コード作成済み・実機未確認 |
-| M3 | `/stream`(MJPEG)とWeb操作画面 | 未着手 |
+| M2 | HTTPサーバーと `POST /capture` | 完了(build 2 で実機の撮影を確認) |
+| M3 | `/stream`(MJPEG)とWeb操作画面 | コード作成済み・実機未確認(操作画面は模擬サーバーで確認) |
 | M4 | カメラ切替・フラッシュ・タップでピント・写真アプリ保存・自動化スクリプト | 未着手 |
 
 ## 構成
@@ -23,8 +23,9 @@ project.yml                     XcodeGenの定義(Xcodeプロジェクトと Inf
 RemoteShutter/
   RemoteShutterApp.swift        アプリの入口とiPhoneの画面
   AppModel.swift                状態管理、ログ、HTTPのルーティングと認証
-  CameraController.swift        AVCaptureSession とフル解像度JPEGの撮影
-  HTTPServer.swift              NWListener による最小HTTPサーバー
+  CameraController.swift        AVCaptureSession、フル解像度JPEGの撮影、向きの設定
+  LiveStream.swift              ライブ映像を低解像度JPEGにしてMJPEGで配信
+  HTTPServer.swift              NWListener による最小HTTPサーバー(通常の応答とストリーム)
   WebPage.swift                 PCのブラウザに返す操作ページ
   NetworkInfo.swift             Wi-FiのIPアドレス取得
 .github/workflows/build.yml     署名なし .ipa のビルド(どのブランチへのpushでも実行)
@@ -61,12 +62,14 @@ git push -u origin main
    - **プロファイルを信頼**: 設定 > 一般 > VPNとデバイス管理 > 自分のApple ID > 信頼
 5. ホーム画面の RemoteShutter を起動し、「M1: インストールと起動に成功しました」と build番号が出ればM1完了
 
-## 4. 使い方(M2)
+## 4. 使い方
 
 1. iPhoneとPCを**同じWi-Fi**につなぐ
 2. iPhoneでアプリを開く。初回は「カメラ」と「ローカルネットワーク」の許可を求められるので、両方とも許可する
 3. 画面に出る `http://<IP>:8080/?token=<トークン>` を、PCのブラウザで開く
-4. 「撮影」ボタン(またはSpaceキー)で撮影。写真がページに表示され、「保存」でダウンロードできる
+4. 左にライブ映像が出る。「撮影」ボタン(またはSpaceキー)でフル画質の写真を撮る
+5. 撮った写真は右の一覧に並ぶ(最新12枚)。サムネイルで拡大表示、「保存」でダウンロード。「撮ったら自動で保存」にチェックすると毎回ダウンロードされる
+6. iPhoneを横向きで三脚に付けるときは、「向き」を合わせる(写真とライブ映像の両方に効く。iPhoneの画面からも変えられる)
 
 アプリは**前面に開いたまま**にしておく(ホーム画面に戻ったり画面を消したりすると止まる)。
 
@@ -90,6 +93,8 @@ curl.exe "http://<IP>:8080/status?token=<トークン>"
 |---|---|---|
 | GET | `/` | 操作ページ |
 | POST | `/capture` | 撮影して JPEG を返す。`X-Photo-Width` / `X-Photo-Height` / `X-Filename` ヘッダー付き |
+| GET | `/stream` | ライブ映像(MJPEG、横幅最大960px・最大15fps) |
+| POST | `/settings?orientation=...` | 向きを変える。`portrait` / `landscapeRight` / `landscapeLeft` / `portraitUpsideDown` |
 | GET | `/status` | 状態(JSON) |
 | GET | `/log` | iPhone側のログ(テキスト) |
 

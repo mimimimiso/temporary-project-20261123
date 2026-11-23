@@ -21,8 +21,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var token: String
     @Published private(set) var captureCount = 0
     @Published private(set) var maxPhotoSize = "-"
+    @Published private(set) var streamClients = 0
+    @Published private(set) var orientation: CaptureOrientation
 
     let camera = CameraController()
+    private let stream = LiveStream()
     private let server = HTTPServer(port: AppModel.port)
 
     private let lock = NSLock()
@@ -31,6 +34,7 @@ final class AppModel: ObservableObject {
     private var sharedCaptureCount = 0
 
     private static let tokenKey = "token"
+    private static let orientationKey = "orientation"
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -52,6 +56,20 @@ final class AppModel: ObservableObject {
         if saved == nil { UserDefaults.standard.set(initial, forKey: Self.tokenKey) }
         _token = Published(initialValue: initial)
         sharedToken = initial
+
+        let savedOrientation = UserDefaults.standard.string(forKey: Self.orientationKey)
+            .flatMap(CaptureOrientation.init(rawValue:)) ?? .portrait
+        _orientation = Published(initialValue: savedOrientation)
+        camera.setOrientation(savedOrientation)
+
+        stream.log = { [weak self] in self?.log($0) }
+        stream.onClientCountChange = { [weak self] count in
+            DispatchQueue.main.async { self?.streamClients = count }
+        }
+        let stream = self.stream
+        camera.onVideoFrame = { sampleBuffer in
+            stream.handle(sampleBuffer)
+        }
 
         server.log = { [weak self] in self?.log($0) }
         server.onStateChange = { [weak self] state in
@@ -113,6 +131,14 @@ final class AppModel: ObservableObject {
         log("トークンを作り直しました")
     }
 
+    /// どのスレッドから呼んでもよい
+    func setOrientation(_ value: CaptureOrientation) {
+        camera.setOrientation(value)
+        UserDefaults.standard.set(value.rawValue, forKey: Self.orientationKey)
+        DispatchQueue.main.async { self.orientation = value }
+        log("向きを変更: \(value.label)")
+    }
+
     // MARK: - ログ
 
     /// どのスレッドから呼んでもよい
@@ -153,6 +179,18 @@ final class AppModel: ObservableObject {
             connection.respond(.json(statusJSON()))
         case ("GET", "/log"):
             connection.respond(.text(logText()))
+        case ("GET", "/stream"):
+            stream.add(connection)
+        case ("POST", "/settings"):
+            if let raw = request.query["orientation"] {
+                guard let value = CaptureOrientation(rawValue: raw) else {
+                    let allowed = CaptureOrientation.allCases.map(\.rawValue).joined(separator: ", ")
+                    connection.respond(.text("orientation は \(allowed) のどれかを指定してください", status: 400))
+                    return
+                }
+                setOrientation(value)
+            }
+            connection.respond(.json(statusJSON()))
         case ("POST", "/capture"):
             capture(from: request, connection)
         case (_, "/capture"):
@@ -189,6 +227,9 @@ final class AppModel: ObservableObject {
                 "maxPhotoHeight": Int(dims.height),
             ] as [String: Any],
             "captures": count,
+            "orientation": camera.orientation.rawValue,
+            "orientations": CaptureOrientation.allCases.map { ["value": $0.rawValue, "label": $0.label] },
+            "streamClients": stream.clientCount,
         ]
     }
 

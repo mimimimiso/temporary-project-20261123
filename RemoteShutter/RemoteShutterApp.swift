@@ -88,6 +88,21 @@ struct ContentView: View {
                 row("カメラ", model.cameraState)
                 row("最大解像度", model.maxPhotoSize)
                 row("撮影回数", "\(model.captureCount)")
+                row("ライブ映像の視聴", "\(model.streamClients)")
+                HStack {
+                    Text("向き").foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("向き", selection: Binding(
+                        get: { model.orientation },
+                        set: { model.setOrientation($0) }
+                    )) {
+                        ForEach(CaptureOrientation.allCases, id: \.self) { value in
+                            Text(value.label).tag(value)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                .font(.callout)
             }
         } label: {
             Label("状態", systemImage: "info.circle")
