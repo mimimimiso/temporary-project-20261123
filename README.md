@@ -13,8 +13,8 @@ Windows PCのブラウザから、iPhoneのカメラのライブ映像を見な�
 |---|---|---|
 | M1 | 空のアプリをActionsでビルドし、実機で起動する | 完了(build 1 で実機起動を確認) |
 | M2 | HTTPサーバーと `POST /capture` | 完了(build 2 で実機の撮影を確認) |
-| M3 | `/stream`(MJPEG)とWeb操作画面 | コード作成済み・実機未確認(操作画面は模擬サーバーで確認) |
-| M4 | カメラ切替・フラッシュ・タップでピント・写真アプリ保存・自動化スクリプト | 未着手 |
+| M3 | `/stream`(MJPEG)とWeb操作画面 | 完了(build 3 で実機のライブ映像を確認) |
+| M4 | カメラ切替・フラッシュ・タップでピント・写真アプリ保存・自動化スクリプト | コード作成済み・実機未確認(操作画面とスクリプトは模擬サーバーで確認) |
 
 ## 構成
 
@@ -23,11 +23,13 @@ project.yml                     XcodeGenの定義(Xcodeプロジェクトと Inf
 RemoteShutter/
   RemoteShutterApp.swift        アプリの入口とiPhoneの画面
   AppModel.swift                状態管理、ログ、HTTPのルーティングと認証
-  CameraController.swift        AVCaptureSession、フル解像度JPEGの撮影、向きの設定
+  CameraController.swift        AVCaptureSession、フル解像度JPEGの撮影、向き・カメラ切替・フラッシュ・ピント
+  PhotoLibrary.swift            iPhoneの写真アプリへの保存
   LiveStream.swift              ライブ映像を低解像度JPEGにしてMJPEGで配信
   HTTPServer.swift              NWListener による最小HTTPサーバー(通常の応答とストリーム)
   WebPage.swift                 PCのブラウザに返す操作ページ
   NetworkInfo.swift             Wi-FiのIPアドレス取得
+tools/capture.ps1               PCから撮影して保存するスクリプト(連続・一定間隔の撮影も)
 .github/workflows/build.yml     署名なし .ipa のビルド(どのブランチへのpushでも実行)
 ```
 
@@ -70,10 +72,41 @@ git push -u origin main
 4. 左にライブ映像が出る。「撮影」ボタン(またはSpaceキー)でフル画質の写真を撮る
 5. 撮った写真は右の一覧に並ぶ(最新12枚)。サムネイルで拡大表示、「保存」でダウンロード。「撮ったら自動で保存」にチェックすると毎回ダウンロードされる
 6. iPhoneを横向きで三脚に付けるときは、「向き」を合わせる(写真とライブ映像の両方に効く。iPhoneの画面からも変えられる)
+7. ライブ映像を**クリックするとその位置にピントと明るさを合わせる**。ダブルクリックで自動に戻る(構図が大きく変わったときも自動に戻る)
+8. 右の設定で、カメラ(背面/前面)、フラッシュ(オフ/自動/オン)、「iPhoneの写真アプリにも保存」を切り替えられる。設定はiPhoneに記憶される
+   - 前面カメラのライブ映像は鏡のように左右反転して表示する(撮った写真は反転しない)
+   - 「写真アプリにも保存」を初めてオンにすると、iPhoneに許可を求めるダイアログが出るので「許可」する
 
 アプリは**前面に開いたまま**にしておく(ホーム画面に戻ったり画面を消したりすると止まる)。
 
-### PowerShellから撮る
+### PCのスクリプトで撮る(連続撮影・タイムラプス)
+
+`tools/capture.ps1` を使う。`-Url` には iPhone の画面に出ている URL をそのまま貼る。写真は既定で「ピクチャ\RemoteShutter」に保存される。
+
+1枚撮る:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\capture.ps1 -Url "http://<IP>:8080/?token=<トークン>"
+```
+
+10秒ごとに60枚撮って D:\timelapse に保存する:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\capture.ps1 -Url "http://<IP>:8080/?token=<トークン>" -Count 60 -IntervalSec 10 -OutDir D:\timelapse
+```
+
+| オプション | 内容 |
+|---|---|
+| `-Count` | 撮る枚数(既定 1) |
+| `-IntervalSec` | 撮影の間隔(秒)。撮影にかかった時間を含めて数える |
+| `-OutDir` | 保存先フォルダー |
+| `-Camera back\|front` | 撮る前にカメラを切り替える |
+| `-Flash off\|auto\|on` | 撮る前にフラッシュを設定する |
+| `-Orientation portrait\|landscapeRight\|landscapeLeft\|portraitUpsideDown` | 撮る前に向きを設定する |
+
+`-ExecutionPolicy Bypass` は、このスクリプトを実行するときだけ PowerShell の実行制限を外す指定(PCの設定は変わらない)。
+
+### curl で撮る
 
 PowerShellでは `curl` が別のコマンドの別名なので、`curl.exe` と書く。
 
@@ -94,7 +127,8 @@ curl.exe "http://<IP>:8080/status?token=<トークン>"
 | GET | `/` | 操作ページ |
 | POST | `/capture` | 撮影して JPEG を返す。`X-Photo-Width` / `X-Photo-Height` / `X-Filename` ヘッダー付き |
 | GET | `/stream` | ライブ映像(MJPEG、横幅最大960px・最大15fps) |
-| POST | `/settings?orientation=...` | 向きを変える。`portrait` / `landscapeRight` / `landscapeLeft` / `portraitUpsideDown` |
+| POST | `/settings?...` | 設定を変える(指定したものだけ)。`orientation=portrait\|landscapeRight\|landscapeLeft\|portraitUpsideDown`、`camera=back\|front`、`flash=off\|auto\|on`、`saveToPhotos=1\|0` |
+| POST | `/focus?x=0.5&y=0.5` | ライブ映像上の位置(左上0,0〜右下1,1)にピントと明るさを合わせる。`/focus?reset=1` で自動に戻す |
 | GET | `/status` | 状態(JSON) |
 | GET | `/log` | iPhone側のログ(テキスト) |
 

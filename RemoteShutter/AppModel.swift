@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import Foundation
 import UIKit
 
@@ -8,11 +9,12 @@ struct LogLine: Identifiable {
 }
 
 /// アプリ全体の状態。画面用の @Published 値はメインスレッドでだけ更新する。
-/// HTTP サーバーのスレッドから読む値(トークン、ログ、撮影回数)は lock で守る。
+/// HTTP サーバーのスレッドから読む値(トークン、ログ、撮影回数、保存設定)は lock で守る。
 final class AppModel: ObservableObject {
     static let port: UInt16 = 8080
     static let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     static let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    static let hasFrontCamera = CameraController.hasFrontCamera
 
     @Published private(set) var logs: [LogLine] = []
     @Published private(set) var serverState = "停止中"
@@ -23,6 +25,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var maxPhotoSize = "-"
     @Published private(set) var streamClients = 0
     @Published private(set) var orientation: CaptureOrientation
+    @Published private(set) var cameraPosition: CameraPosition
+    @Published private(set) var flash: FlashSetting
+    @Published private(set) var flashSupported = false
+    @Published private(set) var saveToPhotos: Bool
 
     let camera = CameraController()
     private let stream = LiveStream()
@@ -32,9 +38,15 @@ final class AppModel: ObservableObject {
     private var sharedToken: String
     private var sharedLog: [String] = []
     private var sharedCaptureCount = 0
+    private var sharedSaveToPhotos: Bool
 
-    private static let tokenKey = "token"
-    private static let orientationKey = "orientation"
+    private enum Key {
+        static let token = "token"
+        static let orientation = "orientation"
+        static let position = "cameraPosition"
+        static let flash = "flash"
+        static let saveToPhotos = "saveToPhotos"
+    }
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -51,16 +63,27 @@ final class AppModel: ObservableObject {
     }()
 
     init() {
-        let saved = UserDefaults.standard.string(forKey: Self.tokenKey)
-        let initial = saved ?? Self.makeToken()
-        if saved == nil { UserDefaults.standard.set(initial, forKey: Self.tokenKey) }
-        _token = Published(initialValue: initial)
-        sharedToken = initial
+        let defaults = UserDefaults.standard
+        let savedToken = defaults.string(forKey: Key.token)
+        let initialToken = savedToken ?? Self.makeToken()
+        if savedToken == nil { defaults.set(initialToken, forKey: Key.token) }
+        _token = Published(initialValue: initialToken)
+        sharedToken = initialToken
 
-        let savedOrientation = UserDefaults.standard.string(forKey: Self.orientationKey)
-            .flatMap(CaptureOrientation.init(rawValue:)) ?? .portrait
+        let savedOrientation = defaults.string(forKey: Key.orientation).flatMap(CaptureOrientation.init(rawValue:)) ?? .portrait
+        var savedPosition = defaults.string(forKey: Key.position).flatMap(CameraPosition.init(rawValue:)) ?? .back
+        if savedPosition == .front && !Self.hasFrontCamera { savedPosition = .back }
+        let savedFlash = defaults.string(forKey: Key.flash).flatMap(FlashSetting.init(rawValue:)) ?? .off
+        let savedSave = defaults.bool(forKey: Key.saveToPhotos)
         _orientation = Published(initialValue: savedOrientation)
+        _cameraPosition = Published(initialValue: savedPosition)
+        _flash = Published(initialValue: savedFlash)
+        _saveToPhotos = Published(initialValue: savedSave)
+        sharedSaveToPhotos = savedSave
+
         camera.setOrientation(savedOrientation)
+        camera.setPosition(savedPosition)
+        camera.setFlash(savedFlash)
 
         stream.log = { [weak self] in self?.log($0) }
         stream.onClientCountChange = { [weak self] count in
@@ -87,9 +110,11 @@ final class AppModel: ObservableObject {
         camera.onRunningChange = { [weak self] running in
             guard let self = self else { return }
             let dims = self.camera.maxDimensions
+            let flashOK = self.camera.flashSupported
             DispatchQueue.main.async {
                 self.cameraState = running ? "動作中" : "停止"
                 if dims.width > 0 { self.maxPhotoSize = "\(dims.width) × \(dims.height)" }
+                self.flashSupported = flashOK
             }
         }
 
@@ -123,20 +148,53 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 設定(どのスレッドから呼んでもよい)
+
     func regenerateToken() {
         let newToken = Self.makeToken()
-        UserDefaults.standard.set(newToken, forKey: Self.tokenKey)
+        UserDefaults.standard.set(newToken, forKey: Key.token)
         lock.lock(); sharedToken = newToken; lock.unlock()
-        token = newToken
+        DispatchQueue.main.async { self.token = newToken }
         log("トークンを作り直しました")
     }
 
-    /// どのスレッドから呼んでもよい
     func setOrientation(_ value: CaptureOrientation) {
         camera.setOrientation(value)
-        UserDefaults.standard.set(value.rawValue, forKey: Self.orientationKey)
+        UserDefaults.standard.set(value.rawValue, forKey: Key.orientation)
         DispatchQueue.main.async { self.orientation = value }
         log("向きを変更: \(value.label)")
+    }
+
+    func setCameraPosition(_ value: CameraPosition) {
+        guard value == .back || Self.hasFrontCamera else {
+            log("前面カメラが見つかりません")
+            return
+        }
+        camera.setPosition(value)
+        UserDefaults.standard.set(value.rawValue, forKey: Key.position)
+        DispatchQueue.main.async { self.cameraPosition = value }
+    }
+
+    func setFlash(_ value: FlashSetting) {
+        camera.setFlash(value)
+        UserDefaults.standard.set(value.rawValue, forKey: Key.flash)
+        DispatchQueue.main.async { self.flash = value }
+        log("フラッシュ: \(value.label)")
+    }
+
+    func setSaveToPhotos(_ value: Bool) {
+        lock.lock(); sharedSaveToPhotos = value; lock.unlock()
+        UserDefaults.standard.set(value, forKey: Key.saveToPhotos)
+        DispatchQueue.main.async { self.saveToPhotos = value }
+        log("iPhoneの写真アプリにも保存: \(value ? "オン" : "オフ")")
+        if value {
+            // 先に許可ダイアログを出しておく(撮影の瞬間に出ると困るので)
+            PhotoLibrary.requestAccess { [weak self] granted in
+                if !granted {
+                    self?.log("写真アプリへの保存が許可されていません(設定 > RemoteShutter > 写真)")
+                }
+            }
+        }
     }
 
     // MARK: - ログ
@@ -182,15 +240,21 @@ final class AppModel: ObservableObject {
         case ("GET", "/stream"):
             stream.add(connection)
         case ("POST", "/settings"):
-            if let raw = request.query["orientation"] {
-                guard let value = CaptureOrientation(rawValue: raw) else {
-                    let allowed = CaptureOrientation.allCases.map(\.rawValue).joined(separator: ", ")
-                    connection.respond(.text("orientation は \(allowed) のどれかを指定してください", status: 400))
-                    return
-                }
-                setOrientation(value)
+            if let error = applySettings(request.query) {
+                connection.respond(.text(error, status: 400))
+            } else {
+                connection.respond(.json(statusJSON()))
             }
-            connection.respond(.json(statusJSON()))
+        case ("POST", "/focus"):
+            if request.query["reset"] != nil {
+                camera.resetFocus()
+            } else if let x = request.query["x"].flatMap({ Double($0) }), let y = request.query["y"].flatMap({ Double($0) }) {
+                camera.focus(atDisplayPoint: CGPoint(x: x, y: y))
+            } else {
+                connection.respond(.text("x と y(0〜1)を指定してください。自動に戻すときは reset=1", status: 400))
+                return
+            }
+            connection.respond(HTTPResponse(status: 204))
         case ("POST", "/capture"):
             capture(from: request, connection)
         case (_, "/capture"):
@@ -198,6 +262,49 @@ final class AppModel: ObservableObject {
         default:
             connection.respond(.text("Not Found", status: 404))
         }
+    }
+
+    /// /settings のクエリを反映する。おかしな値があればエラーメッセージを返す(何も変えない)
+    private struct SettingsError: Error {
+        let message: String
+    }
+
+    private func applySettings(_ query: [String: String]) -> String? {
+        func parse<T: RawRepresentable & CaseIterable>(_ key: String, _ type: T.Type) throws -> T? where T.RawValue == String {
+            guard let raw = query[key] else { return nil }
+            guard let value = T(rawValue: raw) else {
+                let allowed = T.allCases.map { $0.rawValue }.joined(separator: ", ")
+                throw SettingsError(message: "\(key) は \(allowed) のどれかを指定してください")
+            }
+            return value
+        }
+
+        let orientation: CaptureOrientation?
+        let position: CameraPosition?
+        let flash: FlashSetting?
+        var save: Bool?
+        do {
+            orientation = try parse("orientation", CaptureOrientation.self)
+            position = try parse("camera", CameraPosition.self)
+            flash = try parse("flash", FlashSetting.self)
+            if let raw = query["saveToPhotos"] {
+                switch raw.lowercased() {
+                case "1", "true", "on": save = true
+                case "0", "false", "off": save = false
+                default: throw SettingsError(message: "saveToPhotos は 1 か 0 を指定してください")
+                }
+            }
+        } catch let error as SettingsError {
+            return error.message
+        } catch {
+            return error.localizedDescription
+        }
+
+        if let v = orientation { setOrientation(v) }
+        if let v = position { setCameraPosition(v) }
+        if let v = flash { setFlash(v) }
+        if let v = save { setSaveToPhotos(v) }
+        return nil
     }
 
     private func isAuthorized(_ request: HTTPRequest) -> Bool {
@@ -214,6 +321,7 @@ final class AppModel: ObservableObject {
         let dims = camera.maxDimensions
         lock.lock()
         let count = sharedCaptureCount
+        let save = sharedSaveToPhotos
         lock.unlock()
         return [
             "ok": true,
@@ -227,9 +335,17 @@ final class AppModel: ObservableObject {
                 "maxPhotoHeight": Int(dims.height),
             ] as [String: Any],
             "captures": count,
+            "streamClients": stream.clientCount,
             "orientation": camera.orientation.rawValue,
             "orientations": CaptureOrientation.allCases.map { ["value": $0.rawValue, "label": $0.label] },
-            "streamClients": stream.clientCount,
+            "position": camera.position.rawValue,
+            "positions": CameraPosition.allCases
+                .filter { $0 == .back || Self.hasFrontCamera }
+                .map { ["value": $0.rawValue, "label": $0.label] },
+            "flash": camera.flash.rawValue,
+            "flashModes": FlashSetting.allCases.map { ["value": $0.rawValue, "label": $0.label] },
+            "flashSupported": camera.flashSupported,
+            "saveToPhotos": save,
         ]
     }
 
@@ -245,6 +361,7 @@ final class AppModel: ObservableObject {
                 self.lock.lock()
                 self.sharedCaptureCount += 1
                 let count = self.sharedCaptureCount
+                let save = self.sharedSaveToPhotos
                 self.lock.unlock()
                 DispatchQueue.main.async { self.captureCount = count }
                 self.log("撮影成功: \(photo.width)x\(photo.height) / \(Self.megabytes(photo.data.count)) / \(ms)ms")
@@ -255,6 +372,9 @@ final class AppModel: ObservableObject {
                     "X-Photo-Width": String(photo.width),
                     "X-Photo-Height": String(photo.height),
                 ], body: photo.data))
+                if save {
+                    PhotoLibrary.save(photo.data) { [weak self] in self?.log($0) }
+                }
             case .failure(let error):
                 self.log("撮影失敗: \(error.localizedDescription)")
                 connection.respond(.text("撮影失敗: \(error.localizedDescription)", status: 500))

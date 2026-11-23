@@ -24,7 +24,10 @@ header h1{font-size:18px;margin:0}
 .layout{display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
 @media (min-width:900px){.layout{grid-template-columns:minmax(0,1fr) 320px}}
 .stage{position:relative;background:var(--stage);border-radius:12px;min-height:260px;display:flex;align-items:center;justify-content:center;overflow:hidden}
-#live{display:block;max-width:100%;max-height:calc(100vh - 120px);object-fit:contain}
+#live{display:block;max-width:100%;max-height:calc(100vh - 120px);object-fit:contain;cursor:crosshair}
+#ring{position:absolute;width:72px;height:72px;margin:-36px 0 0 -36px;border:2px solid #facc15;border-radius:8px;pointer-events:none;opacity:0;transition:opacity .6s ease-in .8s}
+#ring.on{opacity:1;transition:none}
+.stage-hint{position:absolute;left:10px;bottom:8px;font-size:12px;color:#d6d5cf;background:rgba(0,0,0,.45);padding:2px 8px;border-radius:6px;pointer-events:none}
 #overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;text-align:center;color:#d6d5cf;font-size:14px;background:rgba(0,0,0,.45)}
 #overlay[hidden]{display:none}
 #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .35s ease-out}
@@ -39,6 +42,8 @@ header h1{font-size:18px;margin:0}
 .field{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
 select{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px}
 .check{display:flex;gap:8px;align-items:center;font-size:14px;margin-top:10px}
+.settings{display:flex;flex-direction:column;gap:10px}
+select:disabled{opacity:.5}
 h2{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 10px}
 .gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .shot{display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--muted)}
@@ -60,7 +65,9 @@ pre{margin:8px 0 0;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Con
   <div class="layout">
     <div class="stage">
       <img id="live" alt="ライブ映像">
+      <div id="ring"></div>
       <div id="flash"></div>
+      <div class="stage-hint">クリックでピント合わせ / ダブルクリックで自動に戻す</div>
       <div id="overlay">ライブ映像に接続中…</div>
     </div>
 
@@ -71,11 +78,20 @@ pre{margin:8px 0 0;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Con
         <div id="msg" class="muted"></div>
       </div>
 
-      <div class="card">
-        <label class="field">向き(iPhone の構え方に合わせる)
-          <select id="orient"></select>
+      <div class="card settings">
+        <label class="field">カメラ
+          <select id="camera" data-key="camera" data-list="positions" data-value="position"></select>
         </label>
-        <label class="check"><input type="checkbox" id="autosave"> 撮ったら自動で保存</label>
+        <label class="field">向き(iPhone の構え方に合わせる)
+          <select id="orient" data-key="orientation" data-list="orientations" data-value="orientation"></select>
+        </label>
+        <label class="field">フラッシュ
+          <select id="flashmode" data-key="flash" data-list="flashModes" data-value="flash"></select>
+        </label>
+        <div>
+          <label class="check"><input type="checkbox" id="autosave"> 撮ったら PC に自動で保存</label>
+          <label class="check"><input type="checkbox" id="savephotos"> iPhone の写真アプリにも保存</label>
+        </div>
       </div>
 
       <div class="card">
@@ -98,7 +114,6 @@ const $ = (id) => document.getElementById(id);
 const MAX_SHOTS = 12;
 const shots = [];
 let online = null;
-let orientReady = false;
 
 // ---- 自動保存の設定(このブラウザだけに記憶) ----
 try { $('autosave').checked = localStorage.getItem('autosave') === '1'; } catch (e) {}
@@ -188,31 +203,76 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ---- 向き ----
-$('orient').addEventListener('change', async () => {
+// ---- 設定(カメラ・向き・フラッシュ・写真アプリ保存) ----
+async function postSettings(key, value) {
   try {
-    const r = await fetch('/settings?' + q + '&orientation=' + encodeURIComponent($('orient').value), { method: 'POST' });
+    const r = await fetch('/settings?' + q + '&' + key + '=' + encodeURIComponent(value), { method: 'POST' });
     if (!r.ok) throw new Error(await r.text());
+    applyStatus(await r.json());
   } catch (e) {
     $('msg').className = 'bad';
-    $('msg').textContent = '向きを変えられません: ' + e.message;
+    $('msg').textContent = '設定を変えられません: ' + e.message;
   }
-});
-
-function fillOrientations(s) {
-  const sel = $('orient');
-  if (!orientReady && Array.isArray(s.orientations)) {
-    for (const o of s.orientations) {
-      const opt = document.createElement('option');
-      opt.value = o.value; opt.textContent = o.label;
-      sel.appendChild(opt);
-    }
-    orientReady = true;
-  }
-  if (document.activeElement !== sel) sel.value = s.orientation;
 }
 
+const selects = [...document.querySelectorAll('select[data-key]')];
+for (const sel of selects) {
+  sel.addEventListener('change', () => postSettings(sel.dataset.key, sel.value));
+}
+$('savephotos').addEventListener('change', () => postSettings('saveToPhotos', $('savephotos').checked ? '1' : '0'));
+
+function fillSelects(s) {
+  for (const sel of selects) {
+    const list = s[sel.dataset.list];
+    if (!sel.options.length && Array.isArray(list)) {
+      for (const o of list) {
+        const opt = document.createElement('option');
+        opt.value = o.value; opt.textContent = o.label;
+        sel.appendChild(opt);
+      }
+    }
+    if (document.activeElement !== sel) sel.value = s[sel.dataset.value];
+  }
+  $('flashmode').disabled = s.flashSupported === false;
+  $('flashmode').title = s.flashSupported === false ? 'このカメラにはフラッシュがありません' : '';
+  if (document.activeElement !== $('savephotos')) $('savephotos').checked = !!s.saveToPhotos;
+}
+
+// ---- ピント(クリックで合わせる、ダブルクリックで自動に戻す) ----
+let focusTimer = null;
+function showRing(e) {
+  const stage = $('live').parentElement.getBoundingClientRect();
+  const ring = $('ring');
+  ring.style.left = (e.clientX - stage.left) + 'px';
+  ring.style.top = (e.clientY - stage.top) + 'px';
+  ring.classList.add('on');
+  requestAnimationFrame(() => requestAnimationFrame(() => ring.classList.remove('on')));
+}
+$('live').addEventListener('click', (e) => {
+  const rect = $('live').getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  clearTimeout(focusTimer);
+  focusTimer = setTimeout(() => {
+    showRing(e);
+    fetch('/focus?' + q + '&x=' + x.toFixed(3) + '&y=' + y.toFixed(3), { method: 'POST' }).catch(() => {});
+  }, 250);
+});
+$('live').addEventListener('dblclick', () => {
+  clearTimeout(focusTimer);
+  fetch('/focus?' + q + '&reset=1', { method: 'POST' }).catch(() => {});
+  $('msg').className = 'muted';
+  $('msg').textContent = 'ピントを自動に戻しました';
+});
+
 // ---- 状態とログ ----
+function applyStatus(s) {
+  fillSelects(s);
+  const cam = s.camera.running ? `最大 ${s.camera.maxPhotoWidth}×${s.camera.maxPhotoHeight}` : 'カメラ停止中';
+  $('info').textContent = `v${s.version} build ${s.build} / iOS ${s.ios} / ${cam} / 撮影 ${s.captures} 回`;
+}
+
 function setOnline(ok) {
   if (online === ok) return;
   const wasOffline = online === false;
@@ -236,9 +296,7 @@ async function poll() {
     }
     const s = await r.json();
     setOnline(true);
-    fillOrientations(s);
-    const cam = s.camera.running ? `最大 ${s.camera.maxPhotoWidth}×${s.camera.maxPhotoHeight}` : 'カメラ停止中';
-    $('info').textContent = `v${s.version} build ${s.build} / iOS ${s.ios} / ${cam} / 撮影 ${s.captures} 回`;
+    applyStatus(s);
     if ($('live').naturalWidth > 0) $('overlay').hidden = true;
   } catch (e) {
     setOnline(false);

@@ -29,6 +29,7 @@ struct ContentView: View {
                 header
                 urlBox
                 statusBox
+                settingsBox
                 logBox
                 Button(role: .destructive) {
                     model.regenerateToken()
@@ -89,24 +90,51 @@ struct ContentView: View {
                 row("最大解像度", model.maxPhotoSize)
                 row("撮影回数", "\(model.captureCount)")
                 row("ライブ映像の視聴", "\(model.streamClients)")
-                HStack {
-                    Text("向き").foregroundStyle(.secondary)
-                    Spacer()
-                    Picker("向き", selection: Binding(
-                        get: { model.orientation },
-                        set: { model.setOrientation($0) }
-                    )) {
-                        ForEach(CaptureOrientation.allCases, id: \.self) { value in
-                            Text(value.label).tag(value)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                .font(.callout)
             }
         } label: {
             Label("状態", systemImage: "info.circle")
         }
+    }
+
+    private var settingsBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                menuRow("カメラ", selection: Binding(
+                    get: { model.cameraPosition },
+                    set: { model.setCameraPosition($0) }
+                ), options: CameraPosition.allCases.filter { $0 == .back || AppModel.hasFrontCamera }, label: \.label)
+                menuRow("向き", selection: Binding(
+                    get: { model.orientation },
+                    set: { model.setOrientation($0) }
+                ), options: CaptureOrientation.allCases, label: \.label)
+                menuRow("フラッシュ", selection: Binding(
+                    get: { model.flash },
+                    set: { model.setFlash($0) }
+                ), options: FlashSetting.allCases, label: \.label)
+                .disabled(!model.flashSupported)
+                Toggle("写真アプリにも保存", isOn: Binding(
+                    get: { model.saveToPhotos },
+                    set: { model.setSaveToPhotos($0) }
+                ))
+                .font(.callout)
+            }
+        } label: {
+            Label("設定(PCのページからも変えられます)", systemImage: "slider.horizontal.3")
+        }
+    }
+
+    private func menuRow<T: Hashable>(_ title: String, selection: Binding<T>, options: [T], label: @escaping (T) -> String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Picker(title, selection: selection) {
+                ForEach(options, id: \.self) { value in
+                    Text(label(value)).tag(value)
+                }
+            }
+            .pickerStyle(.menu)
+        }
+        .font(.callout)
     }
 
     private var logBox: some View {
