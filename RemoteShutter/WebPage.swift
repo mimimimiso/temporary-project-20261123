@@ -44,6 +44,16 @@ select{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(
 .check{display:flex;gap:8px;align-items:center;font-size:14px;margin-top:10px}
 .settings{display:flex;flex-direction:column;gap:10px}
 select:disabled{opacity:.5}
+.sub{font:inherit;font-size:13px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+.sub:disabled{opacity:.5;cursor:not-allowed}
+.dir{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:12px}
+.dirname{font-size:14px;overflow-wrap:anywhere}
+.dirname.set{font-weight:600}
+.dirbtns{display:flex;gap:8px;flex-wrap:wrap}
+.help{font-size:13px;color:var(--muted)}
+.help ol{margin:6px 0 0;padding-left:20px}
+.help li{margin:4px 0}
+.help code{font:12px ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;color:var(--fg);overflow-wrap:anywhere}
 h2{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 10px}
 .gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .shot{display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--muted)}
@@ -92,6 +102,24 @@ pre{margin:8px 0 0;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Con
           <label class="check"><input type="checkbox" id="autosave"> 撮ったら PC に自動で保存</label>
           <label class="check"><input type="checkbox" id="savephotos"> iPhone の写真アプリにも保存</label>
         </div>
+        <div class="dir">
+          <div class="field">PC の保存先フォルダー</div>
+          <div id="dirname" class="dirname">未設定(ブラウザのダウンロード先に保存)</div>
+          <div class="dirbtns">
+            <button id="dirpick" class="sub" type="button">フォルダーを選ぶ</button>
+            <button id="dirclear" class="sub" type="button" hidden>解除</button>
+          </div>
+          <details id="dirhelp" class="help" hidden>
+            <summary>フォルダーを選べるようにする(ブラウザの設定・初回だけ)</summary>
+            <ol>
+              <li>新しいタブのアドレス欄に <code id="flagsurl">vivaldi://flags/#unsafely-treat-insecure-origin-as-secure</code> を入れて開く(Chrome は <code>chrome://</code>、Edge は <code>edge://</code> で始める)</li>
+              <li>「Insecure origins treated as secure」の欄に <code id="origin"></code> を入れ、右の選択を <b>Enabled</b> にする <button id="copyorigin" class="sub" type="button">コピー</button></li>
+              <li>下に出る「Relaunch」でブラウザを再起動し、このページを開き直す</li>
+            </ol>
+            <div>iPhone の IP アドレスが変わったら、この欄も書き換えてください。</div>
+          </details>
+          <div id="dirnote" class="help" hidden></div>
+        </div>
       </div>
 
       <div class="card">
@@ -137,6 +165,111 @@ $('live').addEventListener('error', () => {
   retryTimer = setTimeout(connectLive, 2000);
 });
 
+// ---- PC の保存先フォルダー(File System Access API。Chrome/Edge/Vivaldi など) ----
+// 選んだフォルダーはこのブラウザの IndexedDB に覚えておく(IP アドレスごと)
+const canPickDir = typeof window.showDirectoryPicker === 'function' && window.isSecureContext;
+let saveDir = null;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('remoteshutter', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function kvGet(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction('kv').objectStore('kv').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function kvSet(key, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', 'readwrite');
+    if (value === undefined) tx.objectStore('kv').delete(key); else tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function setAutosave(on) {
+  $('autosave').checked = on;
+  try { localStorage.setItem('autosave', on ? '1' : '0'); } catch (e) {}
+}
+
+function showDir() {
+  const el = $('dirname');
+  el.textContent = saveDir ? `「${saveDir.name}」フォルダーに保存` : '未設定(ブラウザのダウンロード先に保存)';
+  el.className = 'dirname' + (saveDir ? ' set' : '');
+  $('dirclear').hidden = !saveDir;
+}
+
+async function pickDir() {
+  try {
+    const dir = await window.showDirectoryPicker({ id: 'remoteshutter', mode: 'readwrite', startIn: 'pictures' });
+    saveDir = dir;
+    try { await kvSet('saveDir', dir); } catch (e) {}
+    setAutosave(true);
+    showDir();
+    $('msg').className = 'muted';
+    $('msg').textContent = `これから撮る写真は「${dir.name}」フォルダーに自動で保存します`;
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    $('msg').className = 'bad';
+    $('msg').textContent = 'フォルダーを選べません: ' + e.message;
+  }
+}
+
+async function clearDir() {
+  saveDir = null;
+  try { await kvSet('saveDir', undefined); } catch (e) {}
+  showDir();
+}
+
+// ブラウザを開き直すと書き込みの許可が外れることがあるので、撮影(ユーザーの操作)のたびに確かめる
+async function ensureDirPermission() {
+  if (!saveDir) return false;
+  if (typeof saveDir.queryPermission !== 'function') return true;
+  const opts = { mode: 'readwrite' };
+  if ((await saveDir.queryPermission(opts)) === 'granted') return true;
+  return (await saveDir.requestPermission(opts)) === 'granted';
+}
+
+async function writeToDir(blob, name) {
+  const file = await saveDir.getFileHandle(name, { create: true });
+  const w = await file.createWritable();
+  await w.write(blob);
+  await w.close();
+}
+
+$('dirpick').addEventListener('click', pickDir);
+$('dirclear').addEventListener('click', clearDir);
+$('origin').textContent = location.origin;
+$('copyorigin').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(location.origin); $('copyorigin').textContent = 'コピーしました'; }
+  catch (e) { $('copyorigin').textContent = '手で選んでコピーしてください'; }
+});
+
+(async () => {
+  if (canPickDir) {
+    try { saveDir = (await kvGet('saveDir')) || null; } catch (e) { saveDir = null; }
+    showDir();
+  } else if (!window.isSecureContext) {
+    $('dirpick').disabled = true;
+    $('dirhelp').hidden = false;
+    const ua = navigator.userAgent;
+    $('flagsurl').textContent = (/Edg\//.test(ua) ? 'edge' : /Vivaldi/.test(ua) ? 'vivaldi' : 'chrome') + '://flags/#unsafely-treat-insecure-origin-as-secure';
+  } else {
+    $('dirpick').disabled = true;
+    $('dirnote').hidden = false;
+    $('dirnote').textContent = 'このブラウザはフォルダーへの直接保存に対応していません(Chrome・Edge・Vivaldi で使えます)。';
+  }
+})();
+
 // ---- 撮影 ----
 function flash() {
   const f = $('flash');
@@ -176,6 +309,11 @@ async function shoot() {
   $('msg').textContent = '撮影中…';
   flash();
   const t0 = performance.now();
+  // 許可の確認は、クリック直後(撮影の前)にしないとブラウザに拒否される
+  let useDir = false;
+  if ($('autosave').checked && saveDir) {
+    try { useDir = await ensureDirPermission(); } catch (e) { useDir = false; }
+  }
   try {
     const r = await fetch('/capture?' + q, { method: 'POST' });
     if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
@@ -185,8 +323,22 @@ async function shoot() {
     const w = r.headers.get('X-Photo-Width') || '?', h = r.headers.get('X-Photo-Height') || '?';
     const save = addShot(url, name, w, h, blob.size);
     const sec = ((performance.now() - t0) / 1000).toFixed(1);
-    $('msg').textContent = `${name} / ${w}×${h} / ${(blob.size / 1e6).toFixed(1)}MB / ${sec}秒`;
-    if ($('autosave').checked) save.click();
+    let saved = '';
+    if ($('autosave').checked) {
+      if (useDir) {
+        try {
+          await writeToDir(blob, name);
+          saved = ` / 「${saveDir.name}」に保存`;
+        } catch (e) {
+          save.click();
+          saved = ' / フォルダーに保存できずダウンロードに保存: ' + e.message;
+        }
+      } else {
+        save.click();
+        if (saveDir) saved = ' / フォルダーへの書き込みが許可されなかったためダウンロードに保存';
+      }
+    }
+    $('msg').textContent = `${name} / ${w}×${h} / ${(blob.size / 1e6).toFixed(1)}MB / ${sec}秒${saved}`;
   } catch (e) {
     $('msg').className = 'bad';
     $('msg').textContent = '失敗: ' + e.message;
