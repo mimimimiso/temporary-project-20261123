@@ -1,36 +1,119 @@
+import Combine
 import SwiftUI
 import UIKit
 
 @main
 struct RemoteShutterApp: App {
+    @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: model)
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                model.start()
+            }
         }
     }
 }
 
-/// M1: 配布経路の確認用。起動できること、どのビルドが入っているかだけを表示する。
 struct ContentView: View {
-    private let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-    private let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    @ObservedObject var model: AppModel
+    private let ipTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "camera.circle.fill")
-                .font(.system(size: 72))
-                .foregroundStyle(.tint)
-            Text("RemoteShutter")
-                .font(.largeTitle.bold())
-            Text("M1: インストールと起動に成功しました")
-            Text("v\(appVersion) (build \(buildNumber)) / iOS \(UIDevice.current.systemVersion)")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                urlBox
+                statusBox
+                logBox
+                Button(role: .destructive) {
+                    model.regenerateToken()
+                } label: {
+                    Text("トークンを作り直す")
+                }
                 .font(.footnote)
+            }
+            .padding()
+        }
+        .onAppear {
+            // カメラ使用中に自動ロックされないようにする
+            UIApplication.shared.isIdleTimerDisabled = true
+            model.start()
+        }
+        .onReceive(ipTimer) { _ in
+            model.refreshIP()
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("RemoteShutter").font(.title.bold())
+            Spacer()
+            Text("v\(AppModel.appVersion) (build \(AppModel.buildNumber))")
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding()
-        .onAppear {
-            // カメラ使用中に自動ロックされないようにする(M2以降で必要)
-            UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    private var urlBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(model.urlString)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                HStack {
+                    Button("コピー") {
+                        UIPasteboard.general.string = model.urlString
+                    }
+                    .buttonStyle(.bordered)
+                    Spacer()
+                    Text("トークン: \(model.token)")
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } label: {
+            Label("同じWi-FiのPCのブラウザで開く", systemImage: "desktopcomputer")
         }
+    }
+
+    private var statusBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                row("サーバー", model.serverState)
+                row("カメラ", model.cameraState)
+                row("最大解像度", model.maxPhotoSize)
+                row("撮影回数", "\(model.captureCount)")
+            }
+        } label: {
+            Label("状態", systemImage: "info.circle")
+        }
+    }
+
+    private var logBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(model.logs.suffix(40).reversed()) { line in
+                    Text(line.text)
+                        .font(.system(.caption2, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } label: {
+            Label("ログ(新しい順)", systemImage: "list.bullet.rectangle")
+        }
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+        }
+        .font(.callout)
     }
 }

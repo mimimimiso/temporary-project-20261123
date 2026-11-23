@@ -11,8 +11,8 @@ Windows PCのブラウザから、iPhoneのカメラのライブ映像を見な�
 
 | マイルストーン | 内容 | 状態 |
 |---|---|---|
-| M1 | 空のアプリをActionsでビルドし、実機で起動する | コード作成済み・実機未確認 |
-| M2 | HTTPサーバーと `POST /capture` | 未着手 |
+| M1 | 空のアプリをActionsでビルドし、実機で起動する | 完了(build 1 で実機起動を確認) |
+| M2 | HTTPサーバーと `POST /capture` | コード作成済み・実機未確認 |
 | M3 | `/stream`(MJPEG)とWeb操作画面 | 未着手 |
 | M4 | カメラ切替・フラッシュ・タップでピント・写真アプリ保存・自動化スクリプト | 未着手 |
 
@@ -20,8 +20,14 @@ Windows PCのブラウザから、iPhoneのカメラのライブ映像を見な�
 
 ```
 project.yml                     XcodeGenの定義(Xcodeプロジェクトと Info.plist はCI上で生成)
-RemoteShutter/                  Swiftのソース
-.github/workflows/build.yml     署名なし .ipa のビルド
+RemoteShutter/
+  RemoteShutterApp.swift        アプリの入口とiPhoneの画面
+  AppModel.swift                状態管理、ログ、HTTPのルーティングと認証
+  CameraController.swift        AVCaptureSession とフル解像度JPEGの撮影
+  HTTPServer.swift              NWListener による最小HTTPサーバー
+  WebPage.swift                 PCのブラウザに返す操作ページ
+  NetworkInfo.swift             Wi-FiのIPアドレス取得
+.github/workflows/build.yml     署名なし .ipa のビルド(どのブランチへのpushでも実行)
 ```
 
 ## 1. GitHubにpushする(初回)
@@ -54,6 +60,46 @@ git push -u origin main
      (項目が出ないときは、一度Sideloadlyでインストールを試すと出てくる)
    - **プロファイルを信頼**: 設定 > 一般 > VPNとデバイス管理 > 自分のApple ID > 信頼
 5. ホーム画面の RemoteShutter を起動し、「M1: インストールと起動に成功しました」と build番号が出ればM1完了
+
+## 4. 使い方(M2)
+
+1. iPhoneとPCを**同じWi-Fi**につなぐ
+2. iPhoneでアプリを開く。初回は「カメラ」と「ローカルネットワーク」の許可を求められるので、両方とも許可する
+3. 画面に出る `http://<IP>:8080/?token=<トークン>` を、PCのブラウザで開く
+4. 「撮影」ボタン(またはSpaceキー)で撮影。写真がページに表示され、「保存」でダウンロードできる
+
+アプリは**前面に開いたまま**にしておく(ホーム画面に戻ったり画面を消したりすると止まる)。
+
+### PowerShellから撮る
+
+PowerShellでは `curl` が別のコマンドの別名なので、`curl.exe` と書く。
+
+```powershell
+curl.exe -X POST "http://<IP>:8080/capture?token=<トークン>" -o photo.jpg
+```
+
+状態の確認:
+
+```powershell
+curl.exe "http://<IP>:8080/status?token=<トークン>"
+```
+
+### エンドポイント
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| GET | `/` | 操作ページ |
+| POST | `/capture` | 撮影して JPEG を返す。`X-Photo-Width` / `X-Photo-Height` / `X-Filename` ヘッダー付き |
+| GET | `/status` | 状態(JSON) |
+| GET | `/log` | iPhone側のログ(テキスト) |
+
+トークンは `?token=...`、`X-Token: ...` ヘッダー、`Authorization: Bearer ...` のどれでも渡せる。
+
+### つながらないとき
+
+- iPhoneの設定 > RemoteShutter で「ローカルネットワーク」と「カメラ」がオンになっているか
+- PCとiPhoneが同じWi-Fiか(ゲスト用Wi-Fiや「プライバシーセパレーター」がオンのルーターだと、端末同士がつながらない)
+- iPhone画面のIPアドレスが変わっていないか
 
 ### 注意
 
