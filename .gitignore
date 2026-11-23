@@ -1,0 +1,12 @@
+# XcodeGenがCI上で生成するもの
+*.xcodeproj/
+RemoteShutter/Info.plist
+
+# ビルド成果物
+build/
+Payload/
+*.ipa
+
+# OS
+.DS_Store
+Thumbs.db

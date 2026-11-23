@@ -1,0 +1,41 @@
+name: RemoteShutter
+options:
+  bundleIdPrefix: com.remoteshutter
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+targets:
+  RemoteShutter:
+    type: application
+    platform: iOS
+    sources:
+      - path: RemoteShutter
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.remoteshutter.app
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: RemoteShutter/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: ja
+        CFBundleDisplayName: RemoteShutter
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # M2以降で使う権限。先に入れておく
+        NSCameraUsageDescription: PCからのリモート撮影にカメラを使います。
+        NSLocalNetworkUsageDescription: 同じWi-FiのPCから操作を受け付けるためにローカルネットワークを使います。
+        NSPhotoLibraryAddUsageDescription: 撮影した写真を写真アプリにも保存します(設定でオンにした場合のみ)。
