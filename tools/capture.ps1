@@ -17,6 +17,10 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\tools\capture.ps1 -Url "..." -Flash on -Camera front
   前面カメラ・フラッシュありに切り替えてから撮る(設定は iPhone 側に残る)。
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\tools\capture.ps1 -Url "..." -Zoom 2.5
+  倍率を 2.5 倍にしてから撮る(0.25 刻み。1 で等倍に戻る)。
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Url,
@@ -25,7 +29,8 @@ param(
     [string]$OutDir = (Join-Path ([Environment]::GetFolderPath('MyPictures')) 'RemoteShutter'),
     [ValidateSet('', 'back', 'front')][string]$Camera = '',
     [ValidateSet('', 'off', 'auto', 'on')][string]$Flash = '',
-    [ValidateSet('', 'portrait', 'landscapeRight', 'landscapeLeft', 'portraitUpsideDown')][string]$Orientation = ''
+    [ValidateSet('', 'portrait', 'landscapeRight', 'landscapeLeft', 'portraitUpsideDown')][string]$Orientation = '',
+    [ValidateRange(0, 100)][double]$Zoom = 0   # 0 は「変えない」
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,9 +67,18 @@ $settings = @()
 if ($Camera) { $settings += "camera=$Camera" }
 if ($Flash) { $settings += "flash=$Flash" }
 if ($Orientation) { $settings += "orientation=$Orientation" }
+if ($Zoom -gt 0) {
+    if ($Zoom -lt 1) { Exit-WithError '-Zoom は 1 以上を指定してください(例: 1.5)。' }
+    $settings += 'zoom=' + $Zoom.ToString([Globalization.CultureInfo]::InvariantCulture)
+}
 if ($settings.Count -gt 0) {
-    Invoke-RestMethod -Method Post -Uri ("$base/settings?$auth&" + ($settings -join '&')) -TimeoutSec 10 -UseBasicParsing | Out-Null
+    try {
+        $after = Invoke-RestMethod -Method Post -Uri ("$base/settings?$auth&" + ($settings -join '&')) -TimeoutSec 10 -UseBasicParsing
+    } catch {
+        Exit-WithError "設定を変えられません: $($_.Exception.Message)"
+    }
     Write-Host ('設定を変更: ' + ($settings -join ', '))
+    if ($Zoom -gt 0 -and $after.zoom) { Write-Host "倍率: $($after.zoom) 倍" }
     if ($Camera) { Start-Sleep -Seconds 1 }   # カメラの切り替えを待つ
 }
 

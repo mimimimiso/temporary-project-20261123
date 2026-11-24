@@ -112,6 +112,10 @@ struct ContentView: View {
                     set: { model.setFlash($0) }
                 ), options: FlashSetting.allCases, label: \.label)
                 .disabled(!model.flashSupported)
+                menuRow("倍率", selection: Binding(
+                    get: { model.zoom },
+                    set: { model.setZoom($0) }
+                ), options: model.zoomOptions, label: { CameraController.zoomLabel($0) })
                 Toggle("写真アプリにも保存", isOn: Binding(
                     get: { model.saveToPhotos },
                     set: { model.setSaveToPhotos($0) }

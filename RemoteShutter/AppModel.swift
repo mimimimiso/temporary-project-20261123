@@ -29,6 +29,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var flash: FlashSetting
     @Published private(set) var flashSupported = false
     @Published private(set) var saveToPhotos: Bool
+    @Published private(set) var zoom: CGFloat = 1
+    @Published private(set) var zoomOptions: [CGFloat] = [1]
 
     let camera = CameraController()
     private let stream = LiveStream()
@@ -46,6 +48,7 @@ final class AppModel: ObservableObject {
         static let position = "cameraPosition"
         static let flash = "flash"
         static let saveToPhotos = "saveToPhotos"
+        static let zoom = "zoom"
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -80,10 +83,13 @@ final class AppModel: ObservableObject {
         _flash = Published(initialValue: savedFlash)
         _saveToPhotos = Published(initialValue: savedSave)
         sharedSaveToPhotos = savedSave
+        let savedZoom = defaults.object(forKey: Key.zoom) as? Double ?? 1
 
         camera.setOrientation(savedOrientation)
         camera.setPosition(savedPosition)
         camera.setFlash(savedFlash)
+        zoom = camera.setZoom(CGFloat(savedZoom))
+        zoomOptions = camera.zoomOptions
 
         stream.log = { [weak self] in self?.log($0) }
         stream.onClientCountChange = { [weak self] count in
@@ -111,10 +117,15 @@ final class AppModel: ObservableObject {
             guard let self = self else { return }
             let dims = self.camera.maxDimensions
             let flashOK = self.camera.flashSupported
+            // カメラが変わると倍率の上限も変わる
+            let zoom = self.camera.zoom
+            let zoomOptions = self.camera.zoomOptions
             DispatchQueue.main.async {
                 self.cameraState = running ? "動作中" : "停止"
                 if dims.width > 0 { self.maxPhotoSize = "\(dims.width) × \(dims.height)" }
                 self.flashSupported = flashOK
+                self.zoom = zoom
+                self.zoomOptions = zoomOptions
             }
         }
 
@@ -180,6 +191,13 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(value.rawValue, forKey: Key.flash)
         DispatchQueue.main.async { self.flash = value }
         log("フラッシュ: \(value.label)")
+    }
+
+    func setZoom(_ value: CGFloat) {
+        let applied = camera.setZoom(value)
+        UserDefaults.standard.set(Double(applied), forKey: Key.zoom)
+        DispatchQueue.main.async { self.zoom = applied }
+        log("倍率: \(CameraController.zoomLabel(applied))")
     }
 
     func setSaveToPhotos(_ value: Bool) {
@@ -283,7 +301,14 @@ final class AppModel: ObservableObject {
         let position: CameraPosition?
         let flash: FlashSetting?
         var save: Bool?
+        var zoom: CGFloat?
         do {
+            if let raw = query["zoom"] {
+                guard let z = Double(raw), z.isFinite, z >= 1 else {
+                    throw SettingsError(message: "zoom は 1 以上の数(例: 1.5)を指定してください")
+                }
+                zoom = CGFloat(z)
+            }
             orientation = try parse("orientation", CaptureOrientation.self)
             position = try parse("camera", CameraPosition.self)
             flash = try parse("flash", FlashSetting.self)
@@ -304,6 +329,7 @@ final class AppModel: ObservableObject {
         if let v = position { setCameraPosition(v) }
         if let v = flash { setFlash(v) }
         if let v = save { setSaveToPhotos(v) }
+        if let v = zoom { setZoom(v) }
         return nil
     }
 
@@ -346,6 +372,10 @@ final class AppModel: ObservableObject {
             "flashModes": FlashSetting.allCases.map { ["value": $0.rawValue, "label": $0.label] },
             "flashSupported": camera.flashSupported,
             "saveToPhotos": save,
+            "zoom": CameraController.zoomString(camera.zoom),
+            "zoomOptions": camera.zoomOptions.map {
+                ["value": CameraController.zoomString($0), "label": CameraController.zoomLabel($0)]
+            },
         ]
     }
 

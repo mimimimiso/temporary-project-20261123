@@ -16,6 +16,7 @@ Windows PCのブラウザから、iPhoneのカメラのライブ映像を見な�
 | M3 | `/stream`(MJPEG)とWeb操作画面 | 完了(build 3 で実機のライブ映像を確認) |
 | M4 | カメラ切替・フラッシュ・タップでピント・写真アプリ保存・自動化スクリプト | 完了(build 4 で実機を確認) |
 | 追加 | PCの保存先フォルダーをページから選んで自動保存 | コード作成済み・実機未確認(保存の流れは模擬サーバーで確認) |
+| 追加 | 倍率(ズーム)を 0.25 倍刻みで選ぶ | コード作成済み・実機未確認 |
 
 ## 構成
 
@@ -77,6 +78,9 @@ git push -u origin main
 8. 右の設定で、カメラ(背面/前面)、フラッシュ(オフ/自動/オン)、「iPhoneの写真アプリにも保存」を切り替えられる。設定はiPhoneに記憶される
    - 前面カメラのライブ映像は鏡のように左右反転して表示する(撮った写真は反転しない)
    - 「写真アプリにも保存」を初めてオンにすると、iPhoneに許可を求めるダイアログが出るので「許可」する
+9. 「倍率」で 1倍から 0.25 倍刻みで拡大できる(上限は最大5倍。カメラがそれより低い上限なら、その上限まで)。写真とライブ映像の両方に効き、iPhoneの画面からも変えられる
+   - レンズは切り替えず、センサーの中央を切り出して拡大する(デジタルズーム)。写真の画素数は変わらないが、細かさは等倍で撮ってPCで切り抜いたのと同じくらい
+   - ライブ映像を拡大してピントの合い具合を確かめるのにも使える
 
 アプリは**前面に開いたまま**にしておく(ホーム画面に戻ったり画面を消したりすると止まる)。
 
@@ -119,6 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\capture.ps1 -Url "http://<IP>:8
 | `-Camera back\|front` | 撮る前にカメラを切り替える |
 | `-Flash off\|auto\|on` | 撮る前にフラッシュを設定する |
 | `-Orientation portrait\|landscapeRight\|landscapeLeft\|portraitUpsideDown` | 撮る前に向きを設定する |
+| `-Zoom 2.5` | 撮る前に倍率を設定する(0.25 刻みにそろえる。1 で等倍) |
 
 `-ExecutionPolicy Bypass` は、このスクリプトを実行するときだけ PowerShell の実行制限を外す指定(PCの設定は変わらない)。
 
@@ -143,7 +148,7 @@ curl.exe "http://<IP>:8080/status?token=<トークン>"
 | GET | `/` | 操作ページ |
 | POST | `/capture` | 撮影して JPEG を返す。`X-Photo-Width` / `X-Photo-Height` / `X-Filename` ヘッダー付き |
 | GET | `/stream` | ライブ映像(MJPEG、横幅最大960px・最大15fps) |
-| POST | `/settings?...` | 設定を変える(指定したものだけ)。`orientation=portrait\|landscapeRight\|landscapeLeft\|portraitUpsideDown`、`camera=back\|front`、`flash=off\|auto\|on`、`saveToPhotos=1\|0` |
+| POST | `/settings?...` | 設定を変える(指定したものだけ)。`orientation=portrait\|landscapeRight\|landscapeLeft\|portraitUpsideDown`、`camera=back\|front`、`flash=off\|auto\|on`、`saveToPhotos=1\|0`、`zoom=1.5`(1以上、0.25刻みにそろえる) |
 | POST | `/focus?x=0.5&y=0.5` | ライブ映像上の位置(左上0,0〜右下1,1)にピントと明るさを合わせる。`/focus?reset=1` で自動に戻す |
 | GET | `/status` | 状態(JSON) |
 | GET | `/log` | iPhone側のログ(テキスト) |

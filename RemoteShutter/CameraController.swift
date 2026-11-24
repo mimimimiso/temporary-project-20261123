@@ -101,6 +101,12 @@ final class CameraController: NSObject {
     private var _position: CameraPosition = .back
     private var _flash: FlashSetting = .off
     private var _flashSupported = false
+    private var _zoom: CGFloat = 1
+    private var _maxZoom: CGFloat = CameraController.zoomCap
+
+    /// ズームの刻みと上限。デジタルズームなので、上げすぎても画質が粗くなるだけ
+    static let zoomStep: CGFloat = 0.25
+    static let zoomCap: CGFloat = 5
 
     /// どのスレッドから呼ばれてもよいログ出力
     var log: (String) -> Void = { _ in }
@@ -118,7 +124,25 @@ final class CameraController: NSObject {
     var position: CameraPosition { locked { _position } }
     var flash: FlashSetting { locked { _flash } }
     var flashSupported: Bool { locked { _flashSupported } }
+    var zoom: CGFloat { locked { _zoom } }
+    /// 選べる倍率(1倍から zoomStep 刻み)。今のカメラの上限まで
+    var zoomOptions: [CGFloat] {
+        let maxZoom = locked { _maxZoom }
+        return stride(from: 1, through: maxZoom + 0.001, by: Self.zoomStep).map { $0 }
+    }
     var isRunning: Bool { session.isRunning }
+
+    /// 倍率の文字列表記("1"、"1.25"、"2.5" など)。HTTP の値と表示に使う
+    static func zoomString(_ value: CGFloat) -> String {
+        var s = String(format: "%.2f", Double(value))
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
+    }
+
+    static func zoomLabel(_ value: CGFloat) -> String {
+        "\(zoomString(value))倍"
+    }
 
     private func locked<T>(_ body: () -> T) -> T {
         lock.lock(); defer { lock.unlock() }
@@ -145,6 +169,32 @@ final class CameraController: NSObject {
 
     func setFlash(_ value: FlashSetting) {
         lock.lock(); _flash = value; lock.unlock()
+    }
+
+    /// 倍率を変える(写真とライブ映像の両方に効く)。刻みにそろえ、今のカメラの上限で抑える。
+    /// 実際に使う倍率を返す
+    @discardableResult
+    func setZoom(_ value: CGFloat) -> CGFloat {
+        lock.lock()
+        let snapped = (value / Self.zoomStep).rounded() * Self.zoomStep
+        let z = min(max(snapped, 1), _maxZoom)
+        _zoom = z
+        lock.unlock()
+        sessionQueue.async { self.applyZoom() }
+        return z
+    }
+
+    /// _zoom をカメラに反映する(sessionQueue 上で呼ぶ)
+    private func applyZoom() {
+        guard let device = input?.device else { return }
+        let z = min(max(zoom, device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = z
+            device.unlockForConfiguration()
+        } catch {
+            log("倍率を変えられません: \(error.localizedDescription)")
+        }
     }
 
     /// カメラを切り替える。起動前なら次の起動時に使う
@@ -291,12 +341,19 @@ final class CameraController: NSObject {
         }
         photoOutput.maxPhotoQualityPrioritization = .quality
 
+        // 選べる倍率の上限は、カメラの上限と zoomCap の小さいほう(刻みにそろえる)
+        let deviceMax = min(device.activeFormat.videoMaxZoomFactor, Self.zoomCap)
+        let maxZoom = max(1, (deviceMax / Self.zoomStep).rounded(.down) * Self.zoomStep)
+
         lock.lock()
         _maxDimensions = best
         _flashSupported = photoOutput.supportedFlashModes.contains(.on)
+        _maxZoom = maxZoom
+        _zoom = min(_zoom, maxZoom)
         lock.unlock()
 
         applyConnections()
+        applyZoom()
         resetFocus(device)
 
         let list = candidates.map { "\($0.width)x\($0.height)" }.joined(separator: ", ")
@@ -331,13 +388,17 @@ final class CameraController: NSObject {
             if self.position == .front { u = 1 - u } // ライブ映像は左右反転している
 
             // 表示上の座標を、センサー基準(横向き・画面の下端が右)の座標に戻す
-            let devicePoint: CGPoint
+            var devicePoint: CGPoint
             switch self.orientation {
             case .landscapeRight: devicePoint = CGPoint(x: u, y: v)
             case .portrait: devicePoint = CGPoint(x: v, y: 1 - u)
             case .landscapeLeft: devicePoint = CGPoint(x: 1 - u, y: 1 - v)
             case .portraitUpsideDown: devicePoint = CGPoint(x: 1 - v, y: u)
             }
+            // ズーム中のライブ映像はセンサーの中央を切り出したもの。
+            // ピント位置はセンサー全体の座標で指定するので、中央に寄せて戻す
+            let z = max(device.videoZoomFactor, 1)
+            devicePoint = CGPoint(x: 0.5 + (devicePoint.x - 0.5) / z, y: 0.5 + (devicePoint.y - 0.5) / z)
 
             do {
                 try device.lockForConfiguration()

@@ -98,6 +98,9 @@ pre{margin:8px 0 0;max-height:260px;overflow:auto;font:12px/1.5 ui-monospace,Con
         <label class="field">フラッシュ
           <select id="flashmode" data-key="flash" data-list="flashModes" data-value="flash"></select>
         </label>
+        <label class="field">倍率(写真とライブ映像の両方に効く)
+          <select id="zoom" data-key="zoom" data-list="zoomOptions" data-value="zoom"></select>
+        </label>
         <div>
           <label class="check"><input type="checkbox" id="autosave"> 撮ったら PC に自動で保存</label>
           <label class="check"><input type="checkbox" id="savephotos"> iPhone の写真アプリにも保存</label>
@@ -376,7 +379,11 @@ $('savephotos').addEventListener('change', () => postSettings('saveToPhotos', $(
 function fillSelects(s) {
   for (const sel of selects) {
     const list = s[sel.dataset.list];
-    if (!sel.options.length && Array.isArray(list)) {
+    // 選択肢はカメラによって変わる(倍率の上限など)ので、変わったときだけ作り直す
+    const sig = Array.isArray(list) ? list.map(o => o.value).join('|') : '';
+    if (Array.isArray(list) && sel.dataset.sig !== sig && document.activeElement !== sel) {
+      sel.dataset.sig = sig;
+      sel.textContent = '';
       for (const o of list) {
         const opt = document.createElement('option');
         opt.value = o.value; opt.textContent = o.label;
